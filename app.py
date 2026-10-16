@@ -1,4 +1,5 @@
 import os
+import time
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -15,7 +16,7 @@ LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# 【防呆機制】從環境變數讀取模型名稱，若無設定則預設使用 gemini-3.8-flash
+# 從環境變數讀取模型名稱，若無設定則預設使用 gemini-3.8-flash
 AI_MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
@@ -88,33 +89,48 @@ def handle_message(event):
             current_user_msg = {"role": "user", "parts": [{"text": user_text}]}
             full_contents = history + [current_user_msg]
 
-            # 呼叫 Gemini AI (加入解除安全限制的設定，解決錯別字誤判問題)
-            response = genai_client.models.generate_content(
-                model=AI_MODEL_NAME,  
-                contents=full_contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    safety_settings=[
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                        types.SafetySetting(
-                            category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
-                        ),
-                    ]
-                )
-            )
-            reply_text = response.text
+            # ==========================================
+            # 呼叫 Gemini AI (加入最多重試 3 次的機制)
+            # ==========================================
+            max_retries = 3
+            reply_text = ""
+            for attempt in range(max_retries):
+                try:
+                    response = genai_client.models.generate_content(
+                        model=AI_MODEL_NAME,  
+                        contents=full_contents,
+                        config=types.GenerateContentConfig(
+                            system_instruction=SYSTEM_PROMPT,
+                            safety_settings=[
+                                types.SafetySetting(
+                                    category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                                    threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                                ),
+                                types.SafetySetting(
+                                    category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                                    threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                                ),
+                                types.SafetySetting(
+                                    category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                                    threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                                ),
+                                types.SafetySetting(
+                                    category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                                    threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                                ),
+                            ]
+                        )
+                    )
+                    reply_text = response.text
+                    break  # 成功取得回覆，跳出重試迴圈
+                    
+                except Exception as api_e:
+                    # 如果是 503 錯誤，且還沒達到最大重試次數，就等待 2 秒後重試
+                    if "503" in str(api_e) and attempt < max_retries - 1:
+                        print(f"⚠️ 遇到 503 塞車，等待 2 秒後自動重試 (第 {attempt+1} 次)...")
+                        time.sleep(2)
+                    else:
+                        raise api_e  # 其他錯誤或重試 3 次仍失敗，丟給最外層處理
 
             # 成功取得回覆後，更新歷史記憶庫
             history.append(current_user_msg)
@@ -136,4 +152,5 @@ def handle_message(event):
     )
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT",5000))
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
