@@ -23,13 +23,13 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 genai_client = genai.Client(api_key=GEMINI_API_KEY)
 
 # ==========================================
-# 2. 對話記憶庫與品牌人設
+# 2. 對話記憶庫與品牌人設 (System Prompt)
 # ==========================================
 # 用於紀錄個別使用者的歷史對話
 user_histories = {}
 MAX_HISTORY_MESSAGES = 6  # 保留最近 6 條訊息（3組問答），兼顧上下文與輕量化
 
-# Baby Face 專屬系統提示詞 (System Prompt)
+# Baby Face 專屬系統提示詞 (加強話題防護版)
 SYSTEM_PROMPT = """
 你是 Baby Face 的「專屬幸福顧問」。
 你的語氣必須溫暖、親切、帶有祝福感（請適當搭配 ✨ 或 🌸 等表情符號）。
@@ -44,6 +44,7 @@ SYSTEM_PROMPT = """
 【注意事項】
 - 如果客人詢問「客訴、修改已成立訂單、大量客製化報價」，請溫柔地說明，並引導客人輸入【專人】。
 - 回覆必須精簡親切，不可隨意編造未確定的折扣或價格。
+- 【話題防禦機制】如果客人詢問與喜餅、彌月、Baby Face 品牌「完全無關的奇怪話題」（如政治、投資理財、色情、髒話、或要求你講笑話/寫程式），請溫柔地拒絕回答，並將話題引導回喜餅與彌月服務，維持品牌專業形象。
 """
 
 # ==========================================
@@ -87,12 +88,30 @@ def handle_message(event):
             current_user_msg = {"role": "user", "parts": [{"text": user_text}]}
             full_contents = history + [current_user_msg]
 
-            # 呼叫 Gemini AI
+            # 呼叫 Gemini AI (加入解除安全限制的設定，解決錯別字誤判問題)
             response = genai_client.models.generate_content(
-                model=AI_MODEL_NAME,  # 使用變數設定的模型
+                model=AI_MODEL_NAME,  
                 contents=full_contents,
                 config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT
+                    system_instruction=SYSTEM_PROMPT,
+                    safety_settings=[
+                        types.SafetySetting(
+                            category=types.HarmCategory.HARM_CATEGORY_HARASSMENT,
+                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                        ),
+                        types.SafetySetting(
+                            category=types.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
+                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                        ),
+                        types.SafetySetting(
+                            category=types.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
+                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                        ),
+                        types.SafetySetting(
+                            category=types.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
+                            threshold=types.HarmBlockThreshold.BLOCK_NONE,
+                        ),
+                    ]
                 )
             )
             reply_text = response.text
@@ -101,7 +120,7 @@ def handle_message(event):
             history.append(current_user_msg)
             history.append({"role": "model", "parts": [{"text": reply_text}]})
 
-            # 修剪歷史紀錄，防止記憶過長
+            # 修剪歷史紀錄，防止記憶過長導致超出字數限制
             if len(history) > MAX_HISTORY_MESSAGES:
                 user_histories[user_id] = history[-MAX_HISTORY_MESSAGES:]
 
@@ -117,5 +136,4 @@ def handle_message(event):
     )
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    port = int(os.environ.get("PORT",
