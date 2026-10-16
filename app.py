@@ -96,7 +96,7 @@ def handle_message(event):
                 user_histories[user_id] = history[-MAX_HISTORY_MESSAGES:]
 
         except Exception as e:
-            reply_text = "抱歉，目前系統連線較忙碌，請稍後再試，或直接輸入【專人】由門市人員為您服務。"
+            reply_text = f"AI發生錯誤：{e}"
 
     line_bot_api.reply_message(
         event.reply_token,
