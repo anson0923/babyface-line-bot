@@ -12,6 +12,9 @@ LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
+# 【新增這行】從環境變數讀取模型名稱，如果不填，預設就用 gemini-3.8-flash
+AI_MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 genai_client = genai.Client(api_key=GEMINI_API_KEY)
@@ -69,17 +72,10 @@ def handle_message(event):
         user_histories[user_id] = []  # 清空對話記憶
         reply_text = "✨ 已為您通知專屬顧問！請稍候，門市人員會盡快於營業時間內為您處理。"
     else:
-        try:
-            # 3. 取出過往歷史紀錄，並建構本次提問
-            history = user_histories[user_id]
-            current_user_msg = {"role": "user", "parts": [{"text": user_text}]}
-
-            # 將歷史紀錄與最新提問組合
-            full_contents = history + [current_user_msg]
-
+try:
             # 4. 傳送歷史對話與 System Prompt 給 Gemini
             response = genai_client.models.generate_content(
-                model="gemini-2.5-flash",
+                model=AI_MODEL_NAME,  # 【修改這行】改成我們上面設定的變數
                 contents=full_contents,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT
@@ -91,12 +87,16 @@ def handle_message(event):
             history.append(current_user_msg)
             history.append({"role": "model", "parts": [{"text": reply_text}]})
 
-            # 6. 修剪歷史紀錄，只留最近 N 條，防止 context 過長
+            # 6. 修剪歷史紀錄，只留最近 N 條
             if len(history) > MAX_HISTORY_MESSAGES:
                 user_histories[user_id] = history[-MAX_HISTORY_MESSAGES:]
 
         except Exception as e:
-            reply_text = f"AI發生錯誤：{e}"
+            # 【新增防呆機制】
+            # 1. 把真正的錯誤訊息印在 Render 後台給我們自己看
+            print(f"⚠️ 系統發生錯誤: {e}") 
+            # 2. 回覆給客人的話，維持溫暖的品牌調性，並引導轉交真人
+            reply_text = "✨ 抱歉，目前專屬顧問的線路較忙碌，已經為您通知門市人員！稍後將會盡快為您服務喔。"
 
     line_bot_api.reply_message(
         event.reply_token,
