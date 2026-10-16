@@ -8,24 +8,28 @@ from google.genai import types
 
 app = Flask(__name__)
 
+# ==========================================
+# 1. 環境變數與金鑰設定
+# ==========================================
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# 【新增這行】從環境變數讀取模型名稱，如果不填，預設就用 gemini-3.8-flash
+# 【防呆機制】從環境變數讀取模型名稱，若無設定則預設使用 gemini-3.8-flash
 AI_MODEL_NAME = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
 
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 genai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# ---------------------------------------------------------------------------
-# 記憶庫設定：用於紀錄個別使用者的歷史對話
-# 結構：{ "user_id_1": [{"role": "user", ...}, {"role": "model", ...}], ... }
-# ---------------------------------------------------------------------------
+# ==========================================
+# 2. 對話記憶庫與品牌人設
+# ==========================================
+# 用於紀錄個別使用者的歷史對話
 user_histories = {}
-MAX_HISTORY_MESSAGES = 6  # 保留最近 6 條訊息（即 3 組一問一答），兼顧上下文與輕量化
+MAX_HISTORY_MESSAGES = 6  # 保留最近 6 條訊息（3組問答），兼顧上下文與輕量化
 
+# Baby Face 專屬系統提示詞 (System Prompt)
 SYSTEM_PROMPT = """
 你是 Baby Face 的「專屬幸福顧問」。
 你的語氣必須溫暖、親切、帶有祝福感（請適當搭配 ✨ 或 🌸 等表情符號）。
@@ -42,6 +46,9 @@ SYSTEM_PROMPT = """
 - 回覆必須精簡親切，不可隨意編造未確定的折扣或價格。
 """
 
+# ==========================================
+# 3. Flask 路由設定 (接收 LINE 訊息)
+# ==========================================
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
@@ -57,9 +64,11 @@ def callback():
 def home():
     return "Baby Face LINE AI Server Running"
 
+# ==========================================
+# 4. 訊息處理與 AI 回覆邏輯
+# ==========================================
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    # 1. 取得顧客獨有的 LINE User ID
     user_id = event.source.user_id
     user_text = event.message.text.strip()
 
@@ -67,15 +76,20 @@ def handle_message(event):
     if user_id not in user_histories:
         user_histories[user_id] = []
 
-    # 2. 人工接手關鍵字攔截：觸發時順便重置對話記憶
+    # 【真人接手攔截】如果客人打出特定關鍵字，直接清空記憶並通知專人
     if any(keyword in user_text for keyword in ["專人", "真人", "客服", "客訴", "改單"]):
         user_histories[user_id] = []  # 清空對話記憶
         reply_text = "✨ 已為您通知專屬顧問！請稍候，門市人員會盡快於營業時間內為您處理。"
     else:
-try:
-            # 4. 傳送歷史對話與 System Prompt 給 Gemini
+        try:
+            # 準備歷史對話與本次提問
+            history = user_histories[user_id]
+            current_user_msg = {"role": "user", "parts": [{"text": user_text}]}
+            full_contents = history + [current_user_msg]
+
+            # 呼叫 Gemini AI
             response = genai_client.models.generate_content(
-                model=AI_MODEL_NAME,  # 【修改這行】改成我們上面設定的變數
+                model=AI_MODEL_NAME,  # 使用變數設定的模型
                 contents=full_contents,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT
@@ -83,21 +97,20 @@ try:
             )
             reply_text = response.text
 
-            # 5. 生成成功後，把「問與答」一併追加進該使用者的歷史紀錄中
+            # 成功取得回覆後，更新歷史記憶庫
             history.append(current_user_msg)
             history.append({"role": "model", "parts": [{"text": reply_text}]})
 
-            # 6. 修剪歷史紀錄，只留最近 N 條
+            # 修剪歷史紀錄，防止記憶過長
             if len(history) > MAX_HISTORY_MESSAGES:
                 user_histories[user_id] = history[-MAX_HISTORY_MESSAGES:]
 
         except Exception as e:
-            # 【新增防呆機制】
-            # 1. 把真正的錯誤訊息印在 Render 後台給我們自己看
-            print(f"⚠️ 系統發生錯誤: {e}") 
-            # 2. 回覆給客人的話，維持溫暖的品牌調性，並引導轉交真人
+            # 【防呆機制】將錯誤印在 Render 後台方便查修，並給客人友善的回覆
+            print(f"⚠️ 系統發生錯誤: {e}")
             reply_text = "✨ 抱歉，目前專屬顧問的線路較忙碌，已經為您通知門市人員！稍後將會盡快為您服務喔。"
 
+    # 將最終結果回傳給 LINE
     line_bot_api.reply_message(
         event.reply_token,
         TextSendMessage(text=reply_text)
